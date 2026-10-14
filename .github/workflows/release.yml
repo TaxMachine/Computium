@@ -1,0 +1,73 @@
+# Release build:publishing a GitHub release runs the full
+# ForgeGradle build and attaches the jar to that release.
+# The 46Anarchy launcher pins per-release asset URLs, so each release
+# must produce `computium-<version>.jar` (version = tag without `v`).
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gradle 4.6 + ForgeGradle 1.2.11 run on Java 8; compilation forks
+      # a Java 21 javac (Beddium's classes are v61 bytecode).
+      - name: Set up Java 8 (Gradle runtime)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 8
+      - name: Record Java 8 home
+        run: echo "JAVA8=$JAVA_HOME" >> "$GITHUB_ENV"
+
+      - name: Set up Java 21 (compile fork)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Compile-only deps (gitignored by design — see mods/README.md).
+      # Beddium + UniMixins come from their release pages, LWJGL from
+      # Maven Central. Versions must match the local dev setup.
+      - name: Fetch compile-only deps
+        run: |
+          mkdir -p mods
+          curl -sSL -o mods/beddium-mc1.7.10-1.2.3-j21.jar \
+            https://github.com/vfx-dev/Beddium/releases/download/1.2.3-j21/beddium-mc1.7.10-1.2.3-j21.jar
+          curl -sSL -o mods/unimixins-all.jar \
+            "https://github.com/LegacyModdingMC/UniMixins/releases/download/0.3.2/%2Bunimixins-all-1.7.10-0.3.2.jar"
+          curl -sSL -o mods/lwjgl-3.4.3.jar \
+            https://repo1.maven.org/maven2/org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3.jar
+          curl -sSL -o mods/lwjgl-opengl-3.4.3.jar \
+            https://repo1.maven.org/maven2/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar
+          ls -la mods/
+
+      # Deobfuscated Forge workspace (first run downloads MCP mappings
+      # and decompiles — ~10 min, cached per workflow run after that).
+      - name: Setup ForgeGradle workspace
+        run: ./gradlew setupDecompWorkspace --console=plain
+        env:
+          JAVA_HOME: ${{ env.JAVA8 }}
+
+      - name: Build
+        run: ./gradlew build --console=plain
+        env:
+          JAVA_HOME: ${{ env.JAVA8 }}
+          COMPUTIUM_JAVAC21: ${{ env.JAVA_HOME }}/bin/javac
+
+      # Attach versioned jar to the release that triggered this run.
+      - name: Upload release asset
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp build/libs/computium.jar "computium-${VERSION}.jar"
+          sha256sum "computium-${VERSION}.jar"
+          gh release upload "$GITHUB_REF_NAME" "computium-${VERSION}.jar" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

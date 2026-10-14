@@ -53,10 +53,17 @@ export JAVA_HOME=<jdk8u504+>   # Gradle/ForgeGradle run on Java 8
 ./gradlew build                # → build/libs/computium.jar
 ```
 
-Compilation forks a Java 21 `javac` (Beddium's sources need it; emitted
+Compilation forks a Java 21 `javac` (Beddium's classes need it; emitted
 bytecode stays 1.8). It is auto-detected from `../../toolchain`
 (`jdk-21*`), or point `$COMPUTIUM_JAVAC21` at a `javac` binary.
 `mods/` holds the compile-only deps (UniMixins API, Beddium).
+
+## Releases
+
+Publishing a GitHub release runs CI (`.github/workflows/release.yml`),
+which rebuilds from scratch and attaches `computium-<version>.jar` to
+that release. The 46Anarchy launcher pins per-release asset URLs, so no
+code changes are needed on this side — just publish.
 
 Mixin registration needs all three on the `@Mod` class (documented so
 nobody re-breaks it): `@LateMixin` + GTNHMixins `ILateMixinLoader` +
