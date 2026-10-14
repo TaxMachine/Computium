@@ -1,0 +1,93 @@
+#version 430
+// Computium phase 2 (shadow): GPU indirect-command generation, validated
+// against Beddium's CPU emitter before any cutover.
+//
+// Input: per-section mesh descriptors (CPU-uploaded per frame in shadow
+// mode; a persistent store comes with cutover).
+// Output: count word + DrawElementsIndirectCommand structs (20 bytes:
+// count, instanceCount=1, firstIndex, baseVertex, baseInstance=0),
+// mirroring Beddium's IndirectMultiDrawEmitter word-for-word.
+//
+// Face culling mirrors Beddium DefaultChunkRenderer.getVisibleFaces
+// EXACTLY (int math, ±3 leak, bit layout POS_X=0..NEG_Z=5, UNASSIGNED=6).
+// Any divergence from Beddium's emitter is OUR bug — the shadow
+// comparison exists to catch it, not to ship it.
+
+layout(local_size_x = 64) in;
+
+// 6 x uvec4 = 96 bytes per section (std430, no padding surprises).
+struct SectionDesc {
+    uvec4 originAndMask; // x, y, z block coords (as uint), w = sliceMask
+    uvec4 facesA;        // vo0, ec0, io0, vo1
+    uvec4 facesB;        // ec1, io1, vo2, ec2
+    uvec4 facesC;        // io2, vo3, ec3, io3
+    uvec4 facesD;        // vo4, ec4, io4, vo5
+    uvec4 facesE;        // ec5, io5, vo6, ec6
+};
+
+layout(std430, binding = 0) readonly buffer DescBuffer {
+    SectionDesc uDescs[];
+};
+
+// Single uint overlay: [0] = command count, commands follow at
+// [1 + slot*5 .. +4] (count, 1, firstIndex, baseVertex, 0).
+layout(std430, binding = 1) buffer CommandBuffer {
+    uint uData[];
+};
+
+uniform ivec3 uCameraBlock;
+uniform int uFaceCulling; // 1 = apply face test, 0 = emit all slices (Beddium parity)
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uDescs.length()) {
+        return;
+    }
+    SectionDesc d = uDescs[idx];
+    uint sliceMask = d.originAndMask.w;
+    if (sliceMask == 0u) {
+        return;
+    }
+    ivec3 omin = ivec3(int(d.originAndMask.x), int(d.originAndMask.y), int(d.originAndMask.z));
+    ivec3 omax = omin + ivec3(16, 16, 16);
+    ivec3 cam = uCameraBlock;
+    // getVisibleFaces replica (strict inequalities, ±3 leak margin),
+    // or all-slices when Beddium skips culling for this region.
+    uint faces = 127u;
+    if (uFaceCulling != 0) {
+        faces = 1u << 6u; // UNASSIGNED always visible
+    faces |= (cam.x > omin.x - 3 ? (1u << 0u) : 0u);
+    faces |= (cam.y > omin.y - 3 ? (1u << 1u) : 0u);
+    faces |= (cam.z > omin.z - 3 ? (1u << 2u) : 0u);
+    faces |= (cam.x < omax.x + 3 ? (1u << 3u) : 0u);
+    faces |= (cam.y < omax.y + 3 ? (1u << 4u) : 0u);
+    faces |= (cam.z < omax.z + 3 ? (1u << 5u) : 0u);
+    }
+    // Face mesh words into locals (static indexing only — some drivers
+    // mishandle dynamic indexing into temporaries).
+    uint vo0 = d.facesA.x; uint ec0 = d.facesA.y; uint io0 = d.facesA.z;
+    uint vo1 = d.facesA.w; uint ec1 = d.facesB.x; uint io1 = d.facesB.y;
+    uint vo2 = d.facesB.z; uint ec2 = d.facesB.w; uint io2 = d.facesC.x;
+    uint vo3 = d.facesC.y; uint ec3 = d.facesC.z; uint io3 = d.facesC.w;
+    uint vo4 = d.facesD.x; uint ec4 = d.facesD.y; uint io4 = d.facesD.z;
+    uint vo5 = d.facesD.w; uint ec5 = d.facesE.x; uint io5 = d.facesE.y;
+    uint vo6 = d.facesE.z; uint ec6 = d.facesE.w;
+    for (int f = 0; f < 7; f++) {
+        if ((((sliceMask >> uint(f)) & 1u) & ((faces >> uint(f)) & 1u)) == 0u) {
+            continue;
+        }
+        uint fvo = f == 0 ? vo0 : (f == 1 ? vo1 : (f == 2 ? vo2 : (f == 3 ? vo3 : (f == 4 ? vo4 : (f == 5 ? vo5 : vo6)))));
+        uint fec = f == 0 ? ec0 : (f == 1 ? ec1 : (f == 2 ? ec2 : (f == 3 ? ec3 : (f == 4 ? ec4 : (f == 5 ? ec5 : ec6)))));
+            uint slot = atomicAdd(uData[0], 1u);
+        uint w = 1u + slot * 5u;
+        uData[w + 0u] = fec;
+        uData[w + 1u] = 1u;
+        // firstIndex is ALWAYS 0 here: unsorted passes draw from the
+        // shared quad-pattern index buffer (Beddium passes
+        // indexPointerMask=0 for exactly this reason). Only sorted passes
+        // use real index offsets, and those stay on the CPU path.
+        uData[w + 2u] = 0u;
+        uData[w + 3u] = fvo;
+        uData[w + 4u] = 0u;
+    }
+}

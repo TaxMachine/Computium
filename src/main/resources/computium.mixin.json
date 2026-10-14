@@ -1,0 +1,17 @@
+{
+  "required": false,
+  "minVersion": "0.7.11",
+  "package": "dev.taxmachine.computium.mixin",
+  "refmap": "computium.mixin.refmap.json",
+  "target": "@env(DEFAULT)",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "MixinOcclusionCullerFrustum",
+    "MixinRenderSectionManagerUpdate",
+    "MixinDefaultChunkRendererFill"
+  ],
+  "client": [
+  ],
+  "server": [
+  ]
+}

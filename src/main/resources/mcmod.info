@@ -1,0 +1,12 @@
+[
+  {
+    "modid": "computium",
+    "name": "Computium GPU Chunk Pipeline",
+    "description": "GL 4.6 compute-shader chunk command generation + indirect draws for 1.7.10 (Beddium companion). Self-validating with automatic fallback to stock rendering. All phases gated by config, default OFF.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "url": "https://github.com/TaxMachine/Computium",
+    "authorList": ["TaxMachine"],
+    "credits": "GTNewHorizons (lwjgl3ify/UniMixins), FalsePattern (Beddium/Celeritas lineage), embeddedt (Embeddium)"
+  }
+]

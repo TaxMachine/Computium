@@ -1,0 +1,54 @@
+/** Applying this file in a Forge build will imbue it with the powers of Mixin. */
+
+repositories {
+    maven {
+        name = 'sponge'
+        url = 'https://repo.spongepowered.org/maven/'
+    }
+}
+
+dependencies {
+    // Compile-only: at runtime UniMixins (provided by the launcher in
+    // experimental mode, or embedded sponge Mixin on the classic path)
+    // hosts our mixin configs. Never embed Mixin here — duplicate Mixin
+    // jars on the classpath break both hosts.
+    compileOnly('org.spongepowered:mixin:0.7.11-SNAPSHOT') {
+        setTransitive false
+    }
+}
+
+ext.outRefMapFile = "${tasks.compileJava.temporaryDir}/${project.modid}.mixin.refmap.json"
+
+jar {
+    manifest {
+        attributes (
+            // Main config (required, vanilla-safe) + experimental LWJGL3 config
+            // (optional: only applies when its targets exist, e.g. OptiFine's
+            // Config — keeps the classic Java 8 path green without OptiFine).
+            'MixinConfigs': "${project.modid}.mixin.json",
+            // NOTE: no TweakClass here on purpose. This jar ships NO Mixin
+            // classes (compileOnly) — UniMixins provides MixinTweaker, and
+            // FML picks up our MixinConfigs from every coremod manifest.
+            // Declaring TweakClass would make this jar a (bogus) Mixin
+            // provider candidate in RFB's "Loading tweaker ... from X.jar"
+            // order and confuse tweaker-race triage.
+            'TweakOrder': 0,
+
+            // If these two are not set, Forge will not detect the mod, it will only run the mixins
+            'FMLCorePluginContainsFMLMod': 'true',
+            'ForceLoadAsMod': 'true',
+        )
+    }
+
+    from outRefMapFile;
+}
+
+def outSrgFile = "${tasks.compileJava.temporaryDir}/outSrg.srg"
+
+afterEvaluate {
+    tasks.compileJava.options.compilerArgs += ["-AreobfSrgFile=${tasks.reobf.srg}", "-AoutSrgFile=${outSrgFile}", "-AoutRefMapFile=${outRefMapFile}"];
+}
+
+reobf {
+    addExtraSrgFile outSrgFile
+}

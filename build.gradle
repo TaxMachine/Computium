@@ -1,0 +1,36 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven {
+            name = "forge"
+            url = "https://maven.minecraftforge.net/"
+        }
+        maven {
+            url = "https://jitpack.io"
+        }
+    }
+    dependencies {
+        classpath('com.github.GTNewHorizons:ForgeGradle:1.2.11') {
+            exclude group: "org.eclipse.equinox"
+        }
+    }
+}
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    shade
+}
+
+jar {
+    archiveName = "computium.jar"
+}
+
+apply from: "buildscript/forge-1.7.gradle"
