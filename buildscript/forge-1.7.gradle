@@ -2,7 +2,7 @@
 
 apply plugin: 'forge'
 
-project.version = "1.0.0-shim"
+project.version = "0.1.0"
 
 group = project.group
 archivesBaseName = "${project.archives_base}"

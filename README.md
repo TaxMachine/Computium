@@ -6,7 +6,7 @@ It is a companion to Beddium (1.2.3-j21) on the modernized 1.7.10 stack
 (lwjgl3ify + UniMixins + Java 21), running everything on the existing
 GL 4.6 context — no ROCm/CUDA, no extra SDKs.
 
-By TaxMachine (`dev.taxmachine`).
+By TaxMachine.
 
 ## Status
 
