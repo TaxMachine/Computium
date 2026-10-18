@@ -97,6 +97,21 @@ public final class ComputiumCompute {
     private static long genValidations;
     private static long genMismatches;
     private static int genMismatchStreak;
+    // Cadences (ms) : readbacks GPU synchrones, validation CPU, logs de stats.
+    private static long lastGenReadbackMs;
+    private static long lastHeartbeatMs;
+    private static long lastHeartbeatLogMs;
+    private static long lastValidationMs;
+    private static long lastStatsLogMs;
+    private static long lastGenStatsLogMs;
+    private static long genReadbacks;
+    private static int checksSinceLog;
+    private static int mismatchSinceLog;
+
+    /** Cadence : vrai quand {@code intervalMs} est écoulé ({@code <= 0} = toujours). */
+    private static boolean due(long lastMs, int intervalMs) {
+        return intervalMs <= 0 || System.currentTimeMillis() - lastMs >= intervalMs;
+    }
 
     private static boolean loggedNoGL43;
 
@@ -539,6 +554,13 @@ public final class ComputiumCompute {
         if ((genCalls++ & 15) != 0) {
             return;
         }
+        // Cadence temporelle : borne le travail CPU (et les readbacks qu'il
+        // déclenche) quel que soit le débit de fills — sinon des centaines de
+        // validations par seconde, pour rien.
+        if (!due(lastValidationMs, ComputiumConfig.validationIntervalMs)) {
+            return;
+        }
+        lastValidationMs = System.currentTimeMillis();
         try {
             runCpuValidationInner(emitter, region, storage, renderList,
                     camera, pass, useFaceCulling);
@@ -748,11 +770,20 @@ public final class ComputiumCompute {
         } else {
             genMismatchStreak = 0;
         }
-        if (mismatches > 0 || (genValidations % 600) == 0 || genValidations <= 3) {
+        if (mismatches > 0 || genValidations <= 3
+                || due(lastStatsLogMs, ComputiumConfig.logIntervalMs)) {
+            checksSinceLog++;
+            mismatchSinceLog += mismatches;
             System.out.println("[Computium] cpu shadow check #" + genValidations
                     + ": bed=" + bedCount + " cpu=" + expCount
                     + " mismatched=" + mismatches
-                    + " streak=" + genMismatchStreak);
+                    + " streak=" + genMismatchStreak
+                    + " since=" + checksSinceLog
+                    + " mismatchSince=" + mismatchSinceLog
+                    + " mismatchTotal=" + genMismatches);
+            lastStatsLogMs = System.currentTimeMillis();
+            checksSinceLog = 0;
+            mismatchSinceLog = 0;
         }
         // Streak rule, tuned for rebuild races: during load/TNT bursts a
         // rebuild landing between Beddium's mesh read and ours skews the
@@ -774,7 +805,8 @@ public final class ComputiumCompute {
         // read back (session-start proof the dispatch writes at all —
         // silent zero-counts are the one failure this must catch early).
         if (mismatches == 0 && drewGpu && bedCount > 0
-                && ((genFrames % 600) == 0 || genFrames <= 3)) {
+                && (genFrames <= 3 || due(lastHeartbeatMs, ComputiumConfig.readbackIntervalMs))) {
+            lastHeartbeatMs = System.currentTimeMillis();
             heartbeatVsMirror(expBuf, bedCount);
         }
     }
@@ -994,9 +1026,13 @@ public final class ComputiumCompute {
             } else {
                 cutStreak = 0;
             }
-            System.out.println("[Computium] cutover heartbeat: gpu=" + gpuCount
-                    + " mirror=" + count + " mismatched=" + mismatches
-                    + " streak=" + cutStreak);
+            if (mismatches > 0 || cutStreak > 0
+                    || due(lastHeartbeatLogMs, ComputiumConfig.logIntervalMs)) {
+                lastHeartbeatLogMs = System.currentTimeMillis();
+                System.out.println("[Computium] cutover heartbeat: gpu=" + gpuCount
+                        + " mirror=" + count + " mismatched=" + mismatches
+                        + " streak=" + cutStreak);
+            }
             if (cutStreak >= 3) {
                 cutoverFallback("heartbeat streak");
             }
@@ -1194,7 +1230,12 @@ public final class ComputiumCompute {
         descStaging.clear();
         // CPU-expected command words for the periodic deep check.
         int[] expected = null;
-        boolean deepCheck = (genFrames % 600) == 0;
+        // Deep check échantillonné dans le temps (les 3 premières passes
+        // toujours) : le readback qui suit est synchrone — « toutes les 600
+        // générations » tombait plusieurs fois par seconde et stallait le
+        // thread de rendu plusieurs secondes.
+        boolean deepCheck = genFrames <= 3
+                || due(lastGenReadbackMs, ComputiumConfig.readbackIntervalMs);
         int[] expBuf = deepCheck ? new int[slots * 35] : null;
         int expCount = 0;
         int s = 0;
@@ -1275,17 +1316,26 @@ public final class ComputiumCompute {
         ARBComputeShader.glDispatchCompute((slots + WORKGROUP - 1) / WORKGROUP, 1, 1);
         GL42.glMemoryBarrier(ARBShaderStorageBufferObject.GL_SHADER_STORAGE_BARRIER_BIT);
         GL20.glUseProgram(0);
-        // Readback: count every frame; full commands on deep-check frames.
-        cmdStaging.clear();
-        cmdStaging.limit(1 + slots * 35);
-        GL15.glGetBufferSubData(ARBShaderStorageBufferObject.GL_SHADER_STORAGE_BUFFER,
-                0, cmdStaging);
-        int gpuCount = Math.min(cmdStaging.get(0), slots * 7);
-        genFrames++;
-        genCommandsTotal += gpuCount;
-        if (gpuCount > genCommandsMax) {
-            genCommandsMax = gpuCount;
+        // Readback : uniquement sur les passes échantillonnées. C'est un point
+        // de synchronisation GPU (attente de fin de file) — un appel par fill
+        // stallait le rendu plusieurs secondes. Le rendu indirect n'en dépend
+        // pas (il utilise `drawnSlots`, snapshot CPU) : seuls le compteur de
+        // stats et la comparaison en ont besoin.
+        int gpuCount = -1;
+        if (deepCheck) {
+            cmdStaging.clear();
+            cmdStaging.limit(1 + slots * 35);
+            GL15.glGetBufferSubData(ARBShaderStorageBufferObject.GL_SHADER_STORAGE_BUFFER,
+                    0, cmdStaging);
+            gpuCount = Math.min(cmdStaging.get(0), slots * 7);
+            genReadbacks++;
+            lastGenReadbackMs = System.currentTimeMillis();
+            genCommandsTotal += gpuCount;
+            if (gpuCount > genCommandsMax) {
+                genCommandsMax = gpuCount;
+            }
         }
+        genFrames++;
         if (deepCheck && expected != null) {
             // Multiset compare: GPU appends via atomics in scheduling
             // order (arbitrary), CPU appends in section order. For
@@ -1317,17 +1367,30 @@ public final class ComputiumCompute {
             } else {
                 genMismatchStreak = 0;
             }
-            System.out.println("[Computium] gen shadow check #" + genValidations
-                    + ": gpu=" + gpuCount + " cpu=" + expCount
-                    + " mismatched=" + mismatches + " streak=" + genMismatchStreak);
+            if (mismatches > 0 || genValidations <= 3
+                    || due(lastStatsLogMs, ComputiumConfig.logIntervalMs)) {
+                checksSinceLog++;
+                mismatchSinceLog += mismatches;
+                System.out.println("[Computium] gen shadow check #" + genValidations
+                        + ": gpu=" + gpuCount + " cpu=" + expCount
+                        + " mismatched=" + mismatches + " streak=" + genMismatchStreak
+                        + " since=" + checksSinceLog
+                        + " mismatchSince=" + mismatchSinceLog
+                        + " mismatchTotal=" + genMismatches);
+                lastStatsLogMs = System.currentTimeMillis();
+                checksSinceLog = 0;
+                mismatchSinceLog = 0;
+            }
             if (genMismatchStreak >= 3) {
                 latchedOff = true;
                 logOff("gen shadow mismatch streak — investigate before cutover");
             }
-        } else if ((genFrames % 600) == 0) {
+        } else if (due(lastGenStatsLogMs, ComputiumConfig.logIntervalMs)) {
+            lastGenStatsLogMs = System.currentTimeMillis();
             System.out.println("[Computium] gen shadow: frames=" + genFrames
+                    + " readbacks=" + genReadbacks
                     + " maxCmds=" + genCommandsMax
-                    + " avgCmds=" + (genCommandsTotal / Math.max(1, genFrames)));
+                    + " avgCmds=" + (genCommandsTotal / Math.max(1, genReadbacks)));
         }
         GL15.glBindBuffer(ARBShaderStorageBufferObject.GL_SHADER_STORAGE_BUFFER, 0);
     }

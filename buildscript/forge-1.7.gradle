@@ -73,9 +73,17 @@ tasks.withType(JavaCompile) {
     // Override with $COMPUTIUM_JAVAC21 (full path to a javac binary).
     def javac21 = System.getenv("COMPUTIUM_JAVAC21");
     if (javac21 == null || javac21.trim().isEmpty()) {
-        // Layout: <modlab>/computium/mod-template + <modlab>/toolchain.
-        def candidates = file("../../toolchain").listFiles();
-        def jdk21 = candidates == null ? null : candidates.find { it.name.startsWith("jdk-21") };
+        // Layout: <modlab>/<repo> + <modlab>/toolchain (this repo) OR
+        // <modlab>/mod-template + <modlab>/toolchain (template clones):
+        // try both roots, first jdk-21* directory wins.
+        def jdk21 = null;
+        for (def root : [file("../toolchain"), file("../../toolchain")]) {
+            def candidates = root == null ? null : root.listFiles();
+            jdk21 = candidates == null ? null : candidates.find { it.name.startsWith("jdk-21") };
+            if (jdk21 != null) {
+                break;
+            }
+        }
         javac21 = jdk21 == null ? null : new File(jdk21, "bin/javac").absolutePath;
     }
     if (javac21 != null && new File(javac21).isFile()) {
